@@ -1,0 +1,992 @@
+/* ------------------------------------------------------------------
+   Meridian Motorworks — design system
+
+   Dark base throughout, one geometric sans, and a per-vehicle accent that
+   the scroll timeline writes into --accent so the DOM and the lighting rig
+   always agree about which category is on screen.
+   ------------------------------------------------------------------ */
+
+:root {
+  --void: #040507;
+  --ink: #090b0f;
+  --surface: rgba(18, 21, 27, 0.72);
+  --surface-solid: #12151b;
+  --surface-panel: rgba(16, 19, 25, 0.9);
+  --line: rgba(255, 255, 255, 0.11);
+  --line-strong: rgba(255, 255, 255, 0.22);
+  --text: #e9ebef;
+  --muted: #8f959e;
+  --dim: #61666e;
+  --accent: #ff6b35;
+
+  --pad: clamp(1.25rem, 3.4vw, 3.25rem);
+  --rail: clamp(1.25rem, 3.4vw, 3.25rem);
+
+  --step--1: clamp(0.72rem, 0.68rem + 0.18vw, 0.82rem);
+  --step-0: clamp(0.86rem, 0.8rem + 0.26vw, 1rem);
+  --step-1: clamp(1.05rem, 0.95rem + 0.5vw, 1.35rem);
+  --step-2: clamp(1.45rem, 1.2rem + 1.2vw, 2.3rem);
+  --step-3: clamp(2.1rem, 1.5rem + 2.9vw, 4.4rem);
+  --step-4: clamp(2.8rem, 1.7rem + 5vw, 6.5rem);
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--void);
+  /* Lenis drives scrolling; native smooth would fight it. */
+  scroll-behavior: auto;
+}
+
+body {
+  margin: 0;
+  background: var(--void);
+  color: var(--text);
+  font-family: var(--font-geometric), ui-sans-serif, system-ui, "Segoe UI",
+    Helvetica, Arial, sans-serif;
+  font-size: var(--step-0);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure,
+blockquote {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+::selection {
+  background: var(--accent);
+  color: #05060a;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+/* ------------------------------------------------------------------
+   Type primitives
+   ------------------------------------------------------------------ */
+
+.eyebrow {
+  font-size: var(--step--1);
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.model-name {
+  font-size: var(--step-3);
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 0.98;
+}
+
+.display {
+  font-size: var(--step-4);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 0.94;
+}
+
+.lede {
+  font-size: var(--step-1);
+  color: var(--text);
+  line-height: 1.42;
+  letter-spacing: -0.01em;
+  max-width: 34ch;
+}
+
+.body-muted {
+  color: var(--muted);
+  max-width: 56ch;
+}
+
+.mono {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+/* ------------------------------------------------------------------
+   Stage
+   ------------------------------------------------------------------ */
+
+.film {
+  position: relative;
+  width: 100%;
+}
+
+.stage {
+  position: sticky;
+  top: 0;
+  height: 100svh;
+  width: 100%;
+  overflow: hidden;
+  background: var(--void);
+}
+
+.stage-canvas,
+.scrub-video-layer {
+  position: absolute;
+  inset: 0;
+}
+
+.scrub-video-layer video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* No transition. Consecutive clips are frame-chained, so the hand-off is a
+     hard switch and is invisible. Fading between two near-identical frames
+     over a dark canvas reads as a brightness dip — that was the blink. */
+  pointer-events: none;
+  backface-visibility: hidden;
+  /* Keep each clip on its own compositor layer so swapping which one is
+     visible never triggers a repaint of the stage beneath. */
+  transform: translateZ(0);
+}
+
+/* A vignette keeps text legible over both video and WebGL without
+   dimming the paint reflections in the middle of frame. */
+.stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 85% at 50% 45%, transparent 42%, rgba(3, 4, 6, 0.72) 100%),
+    linear-gradient(to bottom, rgba(3, 4, 6, 0.55) 0%, transparent 22%, transparent 74%, rgba(3, 4, 6, 0.72) 100%);
+  z-index: 2;
+}
+
+.overlays {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.overlays :where(button, a, input, label) {
+  pointer-events: auto;
+}
+
+.beat {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  visibility: hidden;
+  /* will-change is set from Overlays.tsx as each beat becomes visible. Ten
+     full-viewport layers promoted at once is GPU memory spent on nine beats
+     nobody is looking at. */
+}
+
+/* ------------------------------------------------------------------
+   Beat layouts
+   ------------------------------------------------------------------ */
+
+.beat-center {
+  display: grid;
+  place-items: center;
+  text-align: center;
+  padding: var(--pad);
+}
+
+.beat-lower-left {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: flex-start;
+  padding: var(--pad);
+  padding-bottom: clamp(3.5rem, 9vh, 7rem);
+}
+
+.beat-lower-right {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: flex-end;
+  text-align: right;
+  padding: var(--pad);
+  padding-bottom: clamp(3.5rem, 9vh, 7rem);
+}
+
+.beat-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: end;
+  gap: var(--pad);
+  padding: var(--pad);
+  padding-bottom: clamp(3.5rem, 9vh, 7rem);
+}
+
+/* ------------------------------------------------------------------
+   Wordmark
+   ------------------------------------------------------------------ */
+
+.wordmark {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.wordmark-primary {
+  font-size: var(--step-3);
+  font-weight: 600;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+  line-height: 1;
+}
+
+.wordmark-secondary {
+  font-size: var(--step--1);
+  letter-spacing: 0.58em;
+  text-indent: 0.58em;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/* ------------------------------------------------------------------
+   Spec callouts
+   ------------------------------------------------------------------ */
+
+.callout {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 10rem;
+  padding-left: 0.95rem;
+  border-left: 1px solid var(--accent);
+}
+
+.callout-label {
+  font-size: var(--step--1);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.callout-value {
+  font-size: var(--step-2);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+/* ------------------------------------------------------------------
+   Panels
+   ------------------------------------------------------------------ */
+
+.panel {
+  /* No backdrop-filter here. A blur re-samples whatever sits behind it every
+     time that backdrop changes, and the backdrop is a 1080p clip being
+     scrubbed — so it changes every frame and the blur can never be cached.
+     A slightly more opaque surface reads almost identically and is free. */
+  background: var(--surface-panel);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: clamp(1rem, 2vw, 1.6rem);
+}
+
+.spec-table {
+  display: grid;
+  gap: 0;
+  width: min(30rem, 40vw);
+}
+
+.spec-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--step--1);
+}
+
+.spec-row:last-child {
+  border-bottom: none;
+}
+
+.spec-row dt {
+  color: var(--muted);
+  letter-spacing: 0.06em;
+}
+
+.spec-row dd {
+  margin: 0;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------
+   Configurator
+   ------------------------------------------------------------------ */
+
+.config {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  width: min(24rem, 38vw);
+}
+
+.swatch-row {
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.swatch {
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  position: relative;
+  transition: transform 200ms var(--ease);
+}
+
+.swatch:hover {
+  transform: scale(1.09);
+}
+
+.swatch[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--void), 0 0 0 3px var(--accent);
+}
+
+.option-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.option {
+  padding: 0.42rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  font-size: var(--step--1);
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  transition: border-color 200ms var(--ease), color 200ms var(--ease);
+}
+
+.option:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.option[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.price-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--line);
+}
+
+.price-value {
+  font-size: var(--step-2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* ------------------------------------------------------------------
+   Navigation and progress
+   ------------------------------------------------------------------ */
+
+.floating-nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: clamp(1rem, 2.4vw, 1.8rem) var(--rail);
+  pointer-events: none;
+  /* Was mix-blend-mode: difference. Blending a fixed, full-width bar against
+     the scrubbing footage underneath forced a compositor read-back on every
+     frame of the entire film. A scrim plus a fixed colour buys the same
+     legibility over both bright and dark shots for one static paint. */
+  color: var(--text);
+  text-shadow: 0 1px 3px rgba(4, 5, 7, 0.55);
+}
+
+.floating-nav::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(4, 5, 7, 0.5), transparent);
+}
+
+.nav-mark {
+  font-size: var(--step--1);
+  font-weight: 600;
+  letter-spacing: 0.34em;
+  text-indent: 0.34em;
+}
+
+.nav-act {
+  font-size: var(--step--1);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-rail {
+  position: fixed;
+  right: var(--rail);
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  pointer-events: none;
+}
+
+.progress-tick {
+  width: 1px;
+  height: 1.5rem;
+  background: var(--line-strong);
+  position: relative;
+  overflow: hidden;
+}
+
+.progress-tick span {
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  transform: scaleY(0);
+  transform-origin: top;
+  will-change: transform;
+}
+
+.scroll-hint {
+  position: fixed;
+  bottom: clamp(1.2rem, 3vh, 2.4rem);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  font-size: var(--step--1);
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--dim);
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------------
+   Epilogue — the one screen allowed to feel like a page
+   ------------------------------------------------------------------ */
+
+.epilogue {
+  position: relative;
+  z-index: 5;
+  background: linear-gradient(to bottom, rgba(4, 5, 7, 0) 0%, var(--void) 16%);
+  padding: clamp(4rem, 12vh, 9rem) var(--rail) clamp(2.5rem, 6vh, 4rem);
+}
+
+.epilogue-inner {
+  max-width: 78rem;
+  margin: 0 auto;
+  display: grid;
+  gap: clamp(2.5rem, 6vw, 5rem);
+}
+
+.epilogue-head {
+  display: grid;
+  gap: 1.4rem;
+  max-width: 44rem;
+}
+
+.cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.6rem;
+}
+
+.cta {
+  padding: 0.85rem 1.5rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  font-size: var(--step--1);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  transition: background 240ms var(--ease), color 240ms var(--ease),
+    border-color 240ms var(--ease);
+}
+
+.cta-primary {
+  background: var(--text);
+  color: var(--void);
+  border-color: var(--text);
+}
+
+.cta-primary:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--void);
+}
+
+.cta:hover {
+  border-color: var(--text);
+}
+
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: clamp(1.5rem, 3.5vw, 3rem);
+}
+
+.contact-block h3 {
+  font-size: var(--step--1);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 500;
+  margin-bottom: 0.75rem;
+}
+
+.contact-block p,
+.contact-block li {
+  color: var(--text);
+}
+
+.contact-block ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.testimonial {
+  display: grid;
+  gap: 0.85rem;
+  border-top: 1px solid var(--line);
+  padding-top: 1.1rem;
+}
+
+.testimonial blockquote {
+  font-size: var(--step-1);
+  letter-spacing: -0.01em;
+  line-height: 1.4;
+}
+
+.testimonial cite {
+  font-style: normal;
+  font-size: var(--step--1);
+  color: var(--muted);
+  letter-spacing: 0.06em;
+}
+
+.colophon {
+  border-top: 1px solid var(--line);
+  padding-top: 1.4rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 2rem;
+  justify-content: space-between;
+  font-size: var(--step--1);
+  color: var(--dim);
+}
+
+/* ------------------------------------------------------------------
+   Reduced motion — a complete, still, premium one-page site
+   ------------------------------------------------------------------ */
+
+.static-site {
+  max-width: 78rem;
+  margin: 0 auto;
+  padding: clamp(3rem, 9vh, 7rem) var(--rail);
+  display: grid;
+  gap: clamp(3rem, 8vh, 6rem);
+}
+
+.static-hero {
+  display: grid;
+  gap: 1.5rem;
+  min-height: 60svh;
+  align-content: center;
+}
+
+.still {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+  background:
+    radial-gradient(80% 120% at 62% 18%, rgba(122, 148, 184, 0.22) 0%, transparent 58%),
+    radial-gradient(60% 90% at 22% 82%, color-mix(in srgb, var(--accent) 26%, transparent) 0%, transparent 62%),
+    linear-gradient(160deg, #0d1015 0%, #05070a 74%);
+}
+
+.still img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.static-vehicle {
+  display: grid;
+  gap: clamp(1.25rem, 3vw, 2.5rem);
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  align-items: start;
+  border-top: 1px solid var(--line);
+  padding-top: clamp(1.5rem, 4vh, 3rem);
+}
+
+@media (max-width: 900px) {
+  .beat-split,
+  .static-vehicle {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .spec-table,
+  .config {
+    width: min(100%, 26rem);
+  }
+
+  .beat-split {
+    align-content: end;
+  }
+
+  .progress-rail {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ------------------------------------------------------------------
+   The catalogue is the site only when the film is not
+
+   Hidden by default, revealed by a media query — deliberately not by a class
+   that JavaScript adds. A class can only be added after the script runs, and
+   the catalogue is server-rendered, so for one frame on every load the whole
+   catalogue was painted before the film replaced it. Doing it the other way
+   round means that frame cannot exist: the markup arrives already hidden, and
+   nothing has to run to keep it that way.
+
+   The no-JS case is handled by a <noscript> block in layout.tsx, since the
+   film is a client component and never mounts without JavaScript.
+   ------------------------------------------------------------------ */
+
+.catalogue {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .film,
+  .floating-nav,
+  .progress-rail,
+  .scroll-hint {
+    display: none;
+  }
+
+  .catalogue {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+    white-space: normal;
+  }
+}
+
+/* ------------------------------------------------------------------
+   Build credit
+   ------------------------------------------------------------------ */
+
+.build-credit {
+  margin-top: 2.4rem;
+  font-size: var(--step--1);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.build-credit a {
+  color: var(--muted);
+  text-decoration: none;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.15em;
+  transition: color 200ms var(--ease), border-color 200ms var(--ease);
+}
+
+.build-credit a:hover,
+.build-credit a:focus-visible {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* ------------------------------------------------------------------
+   Preloader — the title card
+   ------------------------------------------------------------------ */
+
+html.loading,
+html.loading body {
+  overflow: hidden;
+}
+
+.preloader {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  background: var(--void);
+  transition: opacity 900ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.preloader.is-leaving {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.preloader-mark {
+  text-align: center;
+  padding: 0 var(--rail);
+}
+
+/* The tracking settle: the wordmark starts wide and closes as the letters
+   land, so the spacing itself is part of the motion rather than a fixed
+   value the letters fade into. */
+.preloader-primary {
+  display: flex;
+  justify-content: center;
+  font-size: var(--step-3);
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.62em;
+  text-indent: 0.62em;
+  animation: preload-track 2000ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes preload-track {
+  from {
+    letter-spacing: 0.62em;
+    text-indent: 0.62em;
+  }
+  to {
+    letter-spacing: 0.3em;
+    text-indent: 0.3em;
+  }
+}
+
+.preloader-primary span {
+  opacity: 0;
+  transform: translateY(0.42em);
+  filter: blur(7px);
+  animation: preload-letter 900ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes preload-letter {
+  to {
+    opacity: 1;
+    transform: none;
+    filter: blur(0);
+  }
+}
+
+.preloader-rule {
+  width: min(26rem, 62vw);
+  height: 1px;
+  margin: 1.6rem auto 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--line-strong),
+    transparent
+  );
+  transform: scaleX(0);
+  animation: preload-rule 1100ms cubic-bezier(0.16, 1, 0.3, 1) 820ms forwards;
+}
+
+@keyframes preload-rule {
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.preloader-secondary {
+  display: flex;
+  justify-content: center;
+  margin-top: 1.15rem;
+  font-size: var(--step--1);
+  font-weight: 500;
+  letter-spacing: 0.44em;
+  text-indent: 0.44em;
+  color: var(--dim);
+}
+
+.preloader-secondary span {
+  opacity: 0;
+  animation: preload-fade 700ms ease forwards;
+}
+
+@keyframes preload-fade {
+  to {
+    opacity: 1;
+  }
+}
+
+/* The card still covers the load, it just stops performing. */
+@media (prefers-reduced-motion: reduce) {
+  .preloader-primary {
+    letter-spacing: 0.3em;
+    text-indent: 0.3em;
+    animation: none;
+  }
+  .preloader-primary span,
+  .preloader-secondary span {
+    opacity: 1;
+    transform: none;
+    filter: none;
+    animation: none;
+  }
+  .preloader-rule {
+    transform: scaleX(1);
+    animation: none;
+  }
+}
+
+/* ------------------------------------------------------------------
+   Epilogue reveal
+   ------------------------------------------------------------------ */
+
+/* The epilogue sits below the pinned film. When the film releases the
+   scroll this is the first thing that behaves like an ordinary page, so it
+   lifts into place rather than simply being there. A CSS transition, not a
+   per-frame transform — the film owns the animation frame. */
+.reveal-up.is-armed {
+  opacity: 0;
+  transform: translateY(56px);
+  transition:
+    opacity 760ms ease,
+    transform 980ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity;
+}
+
+.reveal-up.is-armed.is-revealed {
+  opacity: 1;
+  transform: none;
+  /* Dropped once it has landed so the layer is not held on the GPU for the
+     rest of the session. */
+  will-change: auto;
+}
+
+/* A short stagger down the block, so it arrives as a sequence rather than
+   one slab. */
+.reveal-up.is-armed > * {
+  opacity: 0;
+  transform: translateY(22px);
+  transition:
+    opacity 620ms ease,
+    transform 780ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.reveal-up.is-armed.is-revealed > * {
+  opacity: 1;
+  transform: none;
+}
+
+.reveal-up.is-armed.is-revealed > *:nth-child(1) { transition-delay: 60ms; }
+.reveal-up.is-armed.is-revealed > *:nth-child(2) { transition-delay: 170ms; }
+.reveal-up.is-armed.is-revealed > *:nth-child(3) { transition-delay: 280ms; }
+.reveal-up.is-armed.is-revealed > *:nth-child(4) { transition-delay: 390ms; }
+
+/* The credit sits inline in the colophon, so it must not carry the standalone
+   spacing it uses over the film. */
+.colophon .build-credit {
+  margin-top: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Nothing to wait for: this visitor gets the catalogue, not the film. */
+  .preloader {
+    display: none;
+  }
+
+  .reveal-up,
+  .reveal-up.is-armed,
+  .reveal-up > *,
+  .reveal-up.is-armed > * {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}

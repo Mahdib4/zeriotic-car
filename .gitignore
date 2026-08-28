@@ -1,0 +1,25 @@
+node_modules
+.next
+out
+next-env.d.ts
+*.tsbuildinfo
+.DS_Store
+.env*.local
+
+# Higgsfield renders are large binaries — keep them out of git, ship via asset storage
+public/clips/*.mp4
+public/clips/*.webm
+public/stills/*.jpg
+public/stills/*.webp
+# The .png anchor still is deliberately NOT ignored: it is the seed frame the
+# entire Act 0-2 chain was generated from, so keeping it is what makes the
+# film reproducible from this repo.
+!public/clips/.gitkeep
+!public/stills/.gitkeep
+
+# Raw un-compressed Higgsfield renders — the masters. Keep locally, ship the
+# compressed versions in public/clips.
+public/clips-raw/
+public/seed-frames/
+.next-check
+.next-verify

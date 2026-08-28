@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "showroom",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "showroom-verify",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:verify"],
+      "port": 3100
+    }
+  ]
+}
