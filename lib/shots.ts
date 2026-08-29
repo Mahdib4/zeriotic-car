@@ -464,7 +464,39 @@ export const SHOTS: ShotDef[] = [
  * that prefix, so they are never inlined into the client bundle; only
  * scripts/upload-clips-r2.mjs reads them.
  */
-const RAW_CLIP_BASE = process.env.NEXT_PUBLIC_CLIP_BASE_URL ?? "";
+/**
+ * Where the clips actually live. Committed rather than left to configuration.
+ *
+ * The 286MB of footage is gitignored — it is served from object storage, not
+ * from the app — so a deployment built without this value points at
+ * `/clips/…`, which does not exist, and every clip 404s. That is not a
+ * hypothetical: the first Vercel deploy shipped exactly that way, because
+ * `.env.local` holds the R2 keys and is correctly not in the repo, so the
+ * variable simply was not there at build time.
+ *
+ * Defaulting to the real bucket means a clone, a preview branch and a fresh
+ * deploy all work with no setup. The URL is public by design — it is inlined
+ * into the client bundle and fetched by every visitor's browser — so there is
+ * nothing here that was not already on the wire.
+ */
+const DEFAULT_CLIP_BASE = "https://pub-dc4ae1ce916f4ab387601a0adba9f6b3.r2.dev";
+
+/**
+ * `NEXT_PUBLIC_CLIP_BASE_URL` overrides it — set it to a custom domain when
+ * moving off the rate-limited r2.dev hostname, which needs no code change.
+ * Set it to the literal `local` to serve from this origin's own /clips
+ * instead, which is what you want when working offline against
+ * `public/clips`. An explicit word rather than an empty string, because an
+ * unset NEXT_PUBLIC_ variable is not reliably distinguishable from a blank
+ * one once the bundler has inlined it.
+ */
+const RAW_CLIP_BASE = (() => {
+  const raw = (process.env.NEXT_PUBLIC_CLIP_BASE_URL ?? "").trim();
+  if (raw === "") return DEFAULT_CLIP_BASE;
+  if (raw === "local") return "";
+  return raw;
+})();
+
 const CLIP_BASE = RAW_CLIP_BASE.endsWith("/")
   ? RAW_CLIP_BASE.slice(0, -1)
   : RAW_CLIP_BASE;
