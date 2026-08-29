@@ -48,11 +48,12 @@
  *     properties. Window changes are detected from an integer index, and
  *     parking upcoming clips happens once per window change, not per frame.
  *
- *  6. DOWNLOADED, NOT MERELY DECODABLE. A clip is not shown until it is
- *     fully buffered. readyState only promises a frame at the current
- *     position, which off local disk is as good as ready and over a network
- *     is not: seeking into unfetched bytes costs a round trip. See the
- *     constants below for the measured difference.
+ *  6. BUFFERED WHERE IT MATTERS. A clip is not shown until the bytes it is
+ *     about to be scrubbed into are present. readyState only promises a frame
+ *     at the current position, which off local disk is as good as ready and
+ *     over a network is not: seeking into unfetched bytes costs a round trip.
+ *     Requiring the WHOLE file, as this first did, turns every shot boundary
+ *     into a ~1.8s download wall. See the constants below.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -84,29 +85,47 @@ const MIN_SEEK_GAP_MS = 14;
  *
  * `readyState >= HAVE_CURRENT_DATA` only promises a frame at the current
  * position. Served from local disk that is the same as "ready", because a seek
- * anywhere is free. Served from object storage it is not remotely the same: a
- * seek into a byte range the browser has not fetched costs a network round
- * trip. Measured against R2, seeking a clip that had merely reached
- * `canplaythrough` cost 148ms on average and 280ms at p95 — against 5.9ms once
- * the same clip was fully buffered.
+ * anywhere is free. Served from object storage it is not: a seek into a byte
+ * range the browser has not fetched costs a network round trip. Measured
+ * against R2, seeking a clip that had merely reached `canplaythrough` cost
+ * 148ms on average and 280ms at p95, against 5.9ms once it was buffered.
  *
- * The mount window is already two clips ahead, and a clip buffers in about a
- * second, so in normal scrolling this gate is satisfied long before the
- * boundary arrives. The timeout only matters on a slow connection, where a
- * briefly stuttery clip still beats a frozen frame that never advances.
+ * The first version of this gate demanded the WHOLE file, which is what made
+ * the deployed site stutter. A 14MB clip takes ~1.8s to download in full, so
+ * every shot boundary became a wall the film could not cross until it had
+ * finished — scroll faster than that and the picture simply froze.
+ *
+ * What actually has to be true is narrower: the bytes we are about to scrub
+ * INTO must be present. Scrubbing tracks scroll, so it advances through a clip
+ * roughly monotonically, and a few seconds of runway ahead of the playhead is
+ * enough. That is reached in a fraction of the time a whole file takes, and it
+ * keeps arriving as the visitor scrolls.
  */
-const READY_BUFFER_FRACTION = 0.985;
+const READY_LOOKAHEAD_SEC = 3.5;
 const MAX_BUFFER_WAIT_MS = 700;
 
-/** Fraction of a clip's duration currently in the buffer, 0–1. */
-function bufferedFraction(el: HTMLVideoElement): number {
-  const d = el.duration;
-  if (!Number.isFinite(d) || d <= 0) return 0;
-  let covered = 0;
+/**
+ * Seconds of continuously buffered video sitting ahead of `t`.
+ *
+ * Deliberately measures the range CONTAINING `t` rather than a total: a clip
+ * with two disjoint buffered islands adding up to most of its length is still
+ * one seek away from a network round trip, and summing them would call that
+ * ready when it is not.
+ */
+function bufferedAhead(el: HTMLVideoElement, t: number): number {
   for (let i = 0; i < el.buffered.length; i++) {
-    covered += el.buffered.end(i) - el.buffered.start(i);
+    if (t >= el.buffered.start(i) - 0.05 && t <= el.buffered.end(i)) {
+      return el.buffered.end(i) - t;
+    }
   }
-  return covered / d;
+  return 0;
+}
+
+/** True when the clip has runway ahead of `t`, or simply ends soon after it. */
+function readyAt(el: HTMLVideoElement, t: number): boolean {
+  const d = Number.isFinite(el.duration) ? el.duration : 0;
+  const ahead = bufferedAhead(el, t);
+  return ahead >= READY_LOOKAHEAD_SEC || (d > 0 && t + ahead >= d - 0.1);
 }
 
 const ordered = [...RESOLVED_SHOTS].sort((a, b) => a.globalFrom - b.globalFrom);
@@ -122,14 +141,20 @@ function indexAt(p: number): number {
 }
 
 /**
- * The clips kept mounted around shot `i`: one behind, and two ahead. Every
- * mount creates a fresh video decoder, which is expensive, so the window is
- * deliberately wider than strictly needed — during a fast scroll a tight
+ * The clips kept mounted around shot `i`: one behind, and three ahead.
+ *
+ * Every mount creates a fresh video decoder, which is expensive, so the window
+ * is deliberately wider than strictly needed — during a fast scroll a tight
  * window churns decoders at the exact moment the machine is busiest.
+ *
+ * The third clip ahead is there for the network rather than the decoder. Off
+ * local disk two was ample; served from object storage each clip needs about
+ * a second and a half of downloading before it can be shown, so the lookahead
+ * is what decides how fast the visitor may scroll before they outrun it.
  */
 function windowFrom(i: number): ResolvedShot[] {
   const out: ResolvedShot[] = [];
-  for (let k = i - 1; k <= i + 2; k++) {
+  for (let k = i - 1; k <= i + 3; k++) {
     if (k >= 0 && k < ordered.length) out.push(ordered[k]);
   }
   return out;
@@ -302,7 +327,7 @@ export function ScrubVideoLayer({
       }
       if (
         shown.current !== active.id &&
-        bufferedFraction(el) < READY_BUFFER_FRACTION &&
+        !readyAt(el, shotClipTime(p, active, duration)) &&
         performance.now() - activeSince.current.at < MAX_BUFFER_WAIT_MS
       ) {
         return;

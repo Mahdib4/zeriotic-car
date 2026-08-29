@@ -8,10 +8,13 @@
  *
  * Three things are being balanced:
  *
- *  1. Quality. These are gloss paint and chrome reflections on near-black
- *     backgrounds — the worst case for H.264 banding. CRF 20 is the point
- *     where artefacts stop being visible; CRF 18 costs another 30% in size
- *     for almost nothing.
+ *  1. Quality, traded against download time. These are gloss paint and chrome
+ *     reflections on near-black backgrounds — the worst case for H.264
+ *     banding. CRF 20 is where artefacts stop being visible, but the clips are
+ *     served over a network and scrubbing cannot start until the bytes arrive,
+ *     so bitrate is a latency cost, not just a storage one. CRF 23 measures
+ *     SSIM 0.9926 against the master versus 0.9944 at CRF 20, for 28% fewer
+ *     bytes — resolution is held at 1080p, which is the thing viewers notice.
  *
  *  2. Seek cost, which is what actually decides whether a scrubbed film feels
  *     smooth. `video.currentTime` can only land on a keyframe, so every seek
@@ -61,7 +64,7 @@ const flag = (name, fallback) => {
   return i !== -1 && args[i + 1] ? args[i + 1] : fallback;
 };
 
-const CRF = flag("crf", "20");
+const CRF = flag("crf", "23");
 /** Keyframe every N frames. See note 2 above — 3 is measured, not guessed. */
 const GOP = flag("gop", "3");
 const UPSCALE = !args.includes("--no-upscale");
