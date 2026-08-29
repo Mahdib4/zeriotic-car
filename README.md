@@ -344,11 +344,22 @@ storage and the app is served separately.
 
 | value | resulting src |
 | --- | --- |
-| empty (default) | `/clips/AxiomGT-A0-010_void-ignition.mp4` |
-| `https://media.example.com` | `https://media.example.com/clips/AxiomGT-...` |
+| unset (default) | `https://pub-….r2.dev/clips/AxiomGT-…` |
+| `https://media.example.com` | `https://media.example.com/clips/AxiomGT-…` |
+| `local` | `/clips/AxiomGT-A0-010_void-ignition.mp4` |
 
-Leaving it empty is what local development uses, so nothing changes when you
-run `npm run dev` without an R2 bucket.
+**The default is the real bucket, committed deliberately.** The footage is
+gitignored and served from object storage, so a build without this variable
+pointed at `/clips/…`, which does not exist, and every clip 404'd. The first
+Vercel deploy shipped exactly that way — the variable lives in `.env.local`
+alongside the R2 keys, and that file is correctly not in the repo, so it was
+simply absent at build time. Defaulting to the bucket means a clone, a preview
+branch and a fresh deploy all work with no setup, and the URL is public by
+design: it is inlined into the client bundle and fetched by every visitor.
+
+Use `local` to serve from `public/clips` when working offline. An explicit
+word rather than an empty string, because an unset `NEXT_PUBLIC_` variable is
+not reliably distinguishable from a blank one once the bundler has inlined it.
 
 **It is inlined at build time**, not read at runtime — `NEXT_PUBLIC_` variables
 are baked into the client bundle by webpack. Setting it after the fact does
