@@ -268,38 +268,74 @@ scripts/
 
 `node scripts/compress-clips.mjs` — required before shipping. It always encodes
 from `public/clips-raw/` (the untouched masters, gitignored), so it is safe to
-re-run and never compounds generation loss. 312 MB of masters become 286 MB
-shipped.
+re-run and never compounds generation loss. It emits **two renditions** from
+the same masters:
 
-The unusual setting is the GOP: **a keyframe every 3 frames**.
+| | dimensions | profile | size |
+| --- | --- | --- | --- |
+| `public/clips` | 1920×1080 | High, Level 4.0 | 145 MB |
+| `public/clips-720` | 1280×720 | Main, Level 3.1 | 64 MB |
+
+### Eight pixels of width made the site unusable on phones
+
+Higgsfield `pro` renders at **1928×1076**. H.264 counts a frame in 16×16
+macroblocks, so that pads to 1936×1088 = **8228 macroblocks** — over Level
+4.0's ceiling of 8192. x264 therefore tagged those streams **Level 5.0**.
+
+Mobile SoCs guarantee hardware decode to Level 4.0/4.1 at 1080p. Above it they
+may fall back to software, and software-decoding 1080p H.264 while scrubbing is
+not something a phone can do. Fifteen of the twenty-six clips shipped that way.
+1920×1080 is 8160 macroblocks and tags Level 4.0, so every clip is now scaled
+to exactly that — and to *exactly* the same size as every other clip, for the
+same reason they all use one codec: switching between clips of differing
+dimensions can force the decoder to reconfigure at the moment of a cut.
+
+The encoder now pins `-profile:v` and `-level:v` explicitly rather than
+letting x264 pick the lowest level a stream happens to fit, so a future change
+to resolution fails loudly in the encode instead of silently shipping something
+a phone cannot decode in hardware.
+
+### The GOP: measured again, and the first answer was wrong
+
 `video.currentTime` can only land on a keyframe, so every seek decodes forward
-from the preceding one — and on a scrubbed film that seek cost *is* the frame
-budget. Measured in Chrome, 120 random seeks into this footage at 1080p:
+from the preceding one — but a denser keyframe pattern also makes the file
+bigger, and past a point the bytes cost more than the shorter decode chain
+saves. Measured in Chrome, 120 random seeks per variant:
 
-| keyframe every | mean | p95 | p99 | worst | frames blown |
-| --- | --- | --- | --- | --- | --- |
-| 15 frames | 7.65ms | 15.1ms | 18.1ms | 18.7ms | 2.5% |
-| **3 frames** | **3.75ms** | **4.8ms** | **5.0ms** | **6.5ms** | **0%** |
-| 2 frames | 3.96ms | 4.9ms | 10.5ms | 14.3ms | 0% |
-| every frame | 3.88ms | 8.2ms | 15.3ms | 18.8ms | 0.8% |
+| keyframe every | mean | p95 | size/12s | SSIM vs master |
+| --- | --- | --- | --- | --- |
+| 15 frames | 7.65ms | 15.1ms | — | — |
+| 3 frames | 4.78ms | 7.5ms | 9.2 MB | 0.99222 |
+| **6 frames** | **3.74ms** | **5.0ms** | **6.7 MB** | **0.99226** |
+| 12 frames | 4.03ms | 5.4ms | 5.4 MB | 0.99216 |
 
-The mean was never the problem — the tail was. At a keyframe every 15 frames,
-one seek in forty overran a 16.7ms frame and the picture visibly stuck.
-All-intra is not the answer either: the files grow until I/O puts the tail back,
-and it measured *lower* SSIM than GOP 3 at nearly 1.5× the size. Three is the
-floor. B-frames are disabled for the same reason — they decode out of order, so
-landing on one costs an extra reference frame for nothing.
+**Six wins on every axis at once** — a third fewer bytes than three, a third
+faster to seek, and fractionally better SSIM.
 
-Quality went up rather than down: GOP 3 at CRF 20 measures SSIM 0.9945 against
-the master, against 0.9939 for the old GOP-15 encode.
+This file previously defaulted to 3 on the strength of a table that jumped from
+3 straight to 15 and never measured the middle, which is where the optimum
+turned out to be. The crossover is real rather than noise: at a keyframe every
+three frames a third of all frames are I-frames, and the file gets large enough
+that I/O and parsing put back more than the short decode chains save. The
+earlier table had already recorded the same effect at the all-intra end and I
+read it as a floor rather than as one side of a curve.
 
-Re-encode with `--crf 18` or `--gop 15`.
+B-frames stay disabled. They decode out of order, so landing on one costs an
+extra reference frame for no benefit when scrubbing.
+
+```bash
+node scripts/compress-clips.mjs               # both renditions
+node scripts/compress-clips.mjs --only sd     # mobile only
+node scripts/compress-clips.mjs --gop 12      # smaller, marginally slower
+```
 
 ## Why the clips don't crossfade
 
-`ScrubVideoLayer` mounts a four-shot window (one behind, two ahead), switches
-between clips instantly with no CSS transition, and never assigns
-`currentTime` while a seek is already in flight.
+`ScrubVideoLayer` mounts a sliding window of clips (one behind, and three
+ahead on desktop or one on mobile — see [A phone is not a small
+desktop](#a-phone-is-not-a-small-desktop)), switches between clips instantly
+with no CSS transition, and never assigns `currentTime` while a seek is
+already in flight.
 
 All three exist for the same reason — the film used to blink at every shot
 boundary:
@@ -334,9 +370,11 @@ work.
 
 ## Hosting the clips on Cloudflare R2
 
-The app bundle is 168KB. The film is 286MB. There is no reason for those to
-share a host, and R2 charges nothing for egress, so the clips live in object
-storage and the app is served separately.
+The app bundle is 168KB. The film is 145MB at 1080p and another 64MB at 720p.
+There is no reason for those to share a host, and R2 charges nothing for
+egress, so the clips live in object storage and the app is served separately.
+Both renditions go up under key prefixes matching their local directories, so
+one public base URL serves the desktop and mobile cuts.
 
 ### Where the URL comes from
 
@@ -385,9 +423,17 @@ Two headers it sets deliberately:
 - `Content-Type: video/mp4`. If R2 serves these as
   `application/octet-stream` the browser will not treat them as media and
   scrubbing stops working entirely.
-- `Cache-Control: public, max-age=31536000, immutable`. A recut gets a new
-  filename, so the objects genuinely never change. On 286MB this is the
-  difference between a fast second visit and a slow one.
+- `Cache-Control: public, max-age=31536000, immutable`. This is the
+  difference between a fast second visit and a slow one, and it is also a
+  promise about a **URL**, not about a filename — a re-encode breaks it. The
+  bytes behind `AxiomGT-A1-040_panels-weld.mp4` have changed twice now, and
+  every browser that saw the old ones would keep them for a year and never
+  find out; the people most likely to look again are exactly the ones who
+  could not see the fix. `clipSrc` therefore appends `?v=N` from a
+  `CLIP_VERSION` constant in `lib/shots.ts`. **Bump it on every re-encode.**
+  R2 ignores the query when resolving the object, so nothing has to be
+  renamed and the manifest, seed-frame chain and upload script are untouched,
+  but the browser treats it as a different URL and fetches it.
 
 ### Verifying
 
@@ -539,6 +585,57 @@ seconds no matter what" fires while the footer is still far off screen for any
 reader moving at a human pace through 2400vh, losing the animation for exactly
 the people who were watching properly.
 
+## A phone is not a small desktop
+
+On desktop the site was smooth and on a phone it was unusable — not slow,
+unscrollable. Three separate causes, and only one of them was about bandwidth.
+
+**The clips could not be decoded in hardware.** Fifteen of them were tagged
+H.264 Level 5.0 because the footage is eight pixels wider than 1080p. See
+[Compression](#compression) — this was the largest of the three by some
+distance, and nothing else would have mattered while it stood.
+
+**Scrolling had been taken away from the browser.** Lenis's `syncTouch` drives
+touch scrolling from JavaScript: every `touchmove` is `preventDefault`-ed and
+the page is moved by hand on the next frame. On a desktop that is a
+refinement. On a phone it moves scrolling off the compositor thread — where the
+OS handles it and it cannot stutter — and onto the main thread, which on this
+site is already busy seeking a video decoder. The finger then leads the page by
+however long the current frame takes, which does not read as a smoothing
+effect. It reads as the page ignoring you. It is now off for touch; wheel
+smoothing is untouched, so nothing changes on desktop.
+
+**The lookahead was tuned for the wrong scarce resource.** The mount window
+runs one clip behind and three ahead, and that width is deliberate: it exists
+so a fast scroll does not churn decoders at the moment the machine is busiest,
+and so the network has runway. On mobile that reasoning inverts. A mobile SoC
+has a small fixed number of hardware video decoders, and asking for more
+concurrent ones than it has makes the browser evict and re-initialise them —
+far more expensive than the mount it was meant to avoid, and provoked by
+exactly the load that made it necessary. Mobile keeps three alive rather than
+five, and because the 720p rendition is 70% smaller the shorter lookahead still
+buys a comparable number of *seconds* of runway.
+
+Two smaller things go with it. The WebGL scene is not mounted on a touch device
+at all: every act is covered by footage, so it is only ever seen in the instant
+before the opening shot decodes, and it costs a live GL context and a second
+pass for the reflective floor against the same GPU that is decoding the film.
+The stage paints the same near-black behind it either way. And iOS treats
+`preload="auto"` as a hint it is free to ignore, so an element that has never
+been played can sit at `readyState 0` with nothing buffered and the readiness
+gate never opens; a one-time `play()`/`pause()` on first touch unlocks it, and
+runs only against elements that have genuinely fetched nothing, so on every
+other platform it does nothing at all.
+
+### What could not be verified here
+
+The rendition choice, the element count, the decoded resolution and the absence
+of a GL context were all confirmed in a browser. **The scrubbing itself was
+not**, on any phone: the available browser pane does not run
+`requestAnimationFrame`, and the whole film is driven by a GSAP ticker on top
+of it, so the layer is inert there. The encode is measured, the Level figures
+are measured, and the rest is reasoned from documented platform limits.
+
 ## Delivery is the bottleneck, not decoding
 
 Once the clips moved to object storage the limiting factor stopped being how
@@ -548,7 +645,8 @@ matter, both measured in-browser against the live bucket:
 | | before | after |
 | --- | --- | --- |
 | Time before a shot boundary can be crossed | 1811ms | **468ms** |
-| Shipped footage | 286MB | **196MB** |
+| Shipped footage (desktop) | 286MB | **145MB** |
+| Shipped footage (mobile) | 286MB | **64MB** |
 
 Three things caused the original figure.
 
@@ -568,9 +666,10 @@ would call that ready when it is not.
 
 **Bitrate is a latency cost here, not a storage one.** Nothing can be scrubbed
 until it arrives, so CRF moved from 20 to 23: SSIM against the master goes
-0.9944 → 0.9926 for 31% fewer bytes. Resolution stays at 1080p deliberately —
-that is the part viewers notice, and dropping to 720p saves less than the CRF
-change while being far more visible.
+0.9944 → 0.9926 for 31% fewer bytes. Resolution stays at 1080p on desktop
+deliberately — that is the part viewers notice. A later pass took another 26%
+off by fixing the GOP, which cost nothing at all in quality; see
+[Compression](#compression).
 
 **The lookahead is a network parameter.** The mount window runs one clip
 behind and three ahead. The extra depth is not for the decoder; it decides how
@@ -637,8 +736,8 @@ of this file described a throttle that limited seeks to roughly 11 a second
 during fast scrolls, to dodge the 40ms seek spikes the old 15-frame GOP
 produced. That was a mistake: it capped fast scrolling at 11fps, which is
 precisely when smoothness matters most. The real fix was in the encode — see
-[Compression](#compression). At a keyframe every 3 frames a seek costs 3.75ms
-mean and 5.0ms p99, so seeking on every frame is comfortably affordable at
+[Compression](#compression). At a keyframe every 6 frames a seek costs 3.74ms
+mean and 5.0ms p95, so seeking on every frame is comfortably affordable at
 60Hz. The layer chases the newest scroll target instead of queueing:
 whatever position arrives while a seek is in flight overwrites the pending one,
 and the element's `seeked` event starts the next seek immediately rather than
@@ -702,8 +801,10 @@ If scrolling ever feels wrong again, that overlay says why:
 - `seek` shows mean / p95, how many seeks overran the frame budget, and what
   that budget is. The budget is the display's own refresh period — 8.3ms at
   120Hz, 16.7ms at 60Hz — so the readout means the same thing on any screen.
-  Healthy is a p95 under budget with 0 blown. A high p95 means the clips need
-  re-encoding at a denser GOP; check `ffprobe` shows a keyframe every 3 frames.
+  Healthy is a p95 under budget with 0 blown. A high p95 usually means the
+  clips need re-encoding; check `ffprobe` shows a keyframe every 6 frames and
+  `level=40` (or `31` for the 720p rendition). A stream tagged `level=50`
+  is the 1928px bug and will not decode in hardware on a phone.
 - `fps` is coloured against the display's refresh rate, not against 60. Sixty
   frames a second is healthy on a 60Hz panel and half rate on a 120Hz one.
 - A low `min` with the canvas parked and seeks healthy points at something

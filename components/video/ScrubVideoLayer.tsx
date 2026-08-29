@@ -6,10 +6,10 @@
  * Clips are never autoplayed. `video.currentTime` is bound directly to scroll
  * position, so the visitor scrubs the film rather than watching it.
  *
- * Six rules keep this smooth, and all six matter. Rules 4 and 6 in particular
- * are invisible locally and decisive in production — one only shows on a
- * high-refresh display, the other only once the clips are served over a
- * network rather than off local disk.
+ * Seven rules keep this smooth, and all seven matter. Rules 4, 6 and 7 in
+ * particular are invisible locally and decisive in production — one only shows
+ * on a high-refresh display, one only once the clips are served over a network
+ * rather than off local disk, and one only on a phone.
  *
  *  1. A FOUR-SHOT WINDOW. The previous clip stays mounted after the boundary.
  *     If the outgoing element is torn down before the incoming one has decoded
@@ -54,6 +54,11 @@
  *     over a network is not: seeking into unfetched bytes costs a round trip.
  *     Requiring the WHOLE file, as this first did, turns every shot boundary
  *     into a ~1.8s download wall. See the constants below.
+ *
+ *  7. A PHONE IS NOT A SMALL DESKTOP. It fetches a 720p rendition rather than
+ *     1080p, and keeps three decoders alive rather than five, because on
+ *     mobile the scarce resource is hardware decoders rather than bandwidth —
+ *     which inverts the reasoning behind rule 1's wide window. See `AHEAD`.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -61,9 +66,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { scrollState, subscribeScroll } from "@/lib/scroll";
 import {
   RESOLVED_SHOTS,
+  clipSrc,
   shotAt,
   shotClipTime,
   shotStartTime,
+  type ClipProfile,
   type ResolvedShot,
 } from "@/lib/shots";
 
@@ -141,23 +148,55 @@ function indexAt(p: number): number {
 }
 
 /**
- * The clips kept mounted around shot `i`: one behind, and three ahead.
+ * How many clips to keep mounted ahead of the current one. One behind is
+ * always kept — rule 1 depends on it.
  *
- * Every mount creates a fresh video decoder, which is expensive, so the window
- * is deliberately wider than strictly needed — during a fast scroll a tight
- * window churns decoders at the exact moment the machine is busiest.
+ * Every mount creates a fresh video decoder, which is expensive, so on desktop
+ * the window is deliberately wider than strictly needed: during a fast scroll
+ * a tight window churns decoders at the exact moment the machine is busiest.
+ * The far clips are there for the network rather than the decoder — each needs
+ * downloading before it can be shown, so the lookahead is what decides how
+ * fast the visitor may scroll before they outrun it.
  *
- * The third clip ahead is there for the network rather than the decoder. Off
- * local disk two was ample; served from object storage each clip needs about
- * a second and a half of downloading before it can be shown, so the lookahead
- * is what decides how fast the visitor may scroll before they outrun it.
+ * Rule 7. On a phone that reasoning inverts, because the scarce resource is no
+ * longer bandwidth but decoders. A mobile SoC has a small fixed number of
+ * hardware video decoders; ask for more concurrent ones than it has and the
+ * browser starts evicting and re-initialising them, which is far more
+ * expensive than the mount it was meant to avoid — and it happens under
+ * exactly the load that provoked it. Five 1080p decoders is over budget on
+ * most phones. Three is not, and because the mobile rendition is 70% smaller
+ * the shorter lookahead still buys a comparable number of seconds of runway.
  */
-function windowFrom(i: number): ResolvedShot[] {
+const AHEAD: Record<ClipProfile, number> = { hd: 3, sd: 1 };
+
+/** The clips kept mounted around shot `i`: one behind, and `ahead` ahead. */
+function windowFrom(i: number, ahead: number): ResolvedShot[] {
   const out: ResolvedShot[] = [];
-  for (let k = i - 1; k <= i + 3; k++) {
+  for (let k = i - 1; k <= i + ahead; k++) {
     if (k >= 0 && k < ordered.length) out.push(ordered[k]);
   }
   return out;
+}
+
+/**
+ * Which rendition this device should fetch.
+ *
+ * Deliberately not a width test alone. A coarse pointer is the reliable signal
+ * for "phone or tablet", and `hardwareConcurrency` catches the low-powered
+ * laptops that would struggle for the same reason. A narrow window on a
+ * desktop is just a narrow window and keeps the full-resolution film.
+ *
+ * This can only run in the browser, so the layer renders no video elements at
+ * all until it has. That is a deliberate trade: the alternative — guessing on
+ * the server — would put a `src` in the HTML that the client disagrees with,
+ * and React treats a mismatched attribute as a hydration error. The cost is
+ * one tick, which happens behind the title card.
+ */
+function detectProfile(): ClipProfile {
+  const coarse = window.matchMedia("(pointer: coarse)").matches;
+  const narrow = window.innerWidth < 900;
+  const cores = navigator.hardwareConcurrency ?? 8;
+  return coarse || narrow || cores <= 4 ? "sd" : "hd";
 }
 
 export function ScrubVideoLayer({
@@ -165,7 +204,13 @@ export function ScrubVideoLayer({
 }: {
   onCoverageChange?: (covered: boolean) => void;
 }) {
-  const [mounted, setMounted] = useState<ResolvedShot[]>(() => windowFrom(indexAt(0)));
+  /** Null until the browser has told us what kind of device this is. */
+  const [profile, setProfile] = useState<ClipProfile | null>(null);
+  const [mounted, setMounted] = useState<ResolvedShot[]>(() =>
+    windowFrom(indexAt(0), AHEAD.hd),
+  );
+  /** Rule 5: read on the hot path, so it lives in a ref, not in state. */
+  const ahead = useRef(AHEAD.hd);
   const videos = useRef<Map<string, HTMLVideoElement>>(new Map());
   const failed = useRef<Set<string>>(new Set());
   /** The shot currently painted on screen — not necessarily the active one. */
@@ -249,6 +294,17 @@ export function ScrubVideoLayer({
     [seekTo],
   );
 
+  /* -- pick the rendition ------------------------------------------ */
+  useEffect(() => {
+    const next = detectProfile();
+    ahead.current = AHEAD[next];
+    setProfile(next);
+    // Rebuild the window at the new width. -2 can never equal a real index,
+    // so this also guarantees the next scroll tick rebuilds regardless.
+    windowIndex.current = -2;
+    setMounted(windowFrom(indexAt(scrollState.p), AHEAD[next]));
+  }, []);
+
   /* -- slide the mount window ------------------------------------- */
   useEffect(() => {
     return subscribeScroll(({ p }) => {
@@ -257,8 +313,43 @@ export function ScrubVideoLayer({
       const i = indexAt(p);
       if (i === windowIndex.current) return;
       windowIndex.current = i;
-      setMounted(windowFrom(i));
+      setMounted(windowFrom(i, ahead.current));
     });
+  }, []);
+
+  /**
+   * iOS will not fetch video data on its own.
+   *
+   * Safari on iOS treats `preload="auto"` as a hint it is free to ignore, and
+   * on a phone it generally does: a video element that has never been played
+   * sits at readyState 0 with nothing buffered, so the buffer gate in rule 6
+   * can never open and every seek is a cold network round trip. The documented
+   * way out is a user gesture, after which the element may fetch.
+   *
+   * Only elements that have genuinely fetched nothing are touched, so on every
+   * other platform — where preload works — this does nothing at all. A clip at
+   * readyState 0 has no decoded frame and sits at currentTime 0, so the
+   * play/pause pair cannot produce a visible jump.
+   */
+  useEffect(() => {
+    const unlock = () => {
+      for (const [, el] of videos.current) {
+        if (el.readyState !== 0) continue;
+        void el
+          .play()
+          .then(() => el.pause())
+          .catch(() => {
+            /* Autoplay refused: nothing to undo, and nothing else to try. */
+          });
+      }
+    };
+    const opts = { once: true, passive: true } as const;
+    window.addEventListener("touchstart", unlock, opts);
+    window.addEventListener("pointerdown", unlock, opts);
+    return () => {
+      window.removeEventListener("touchstart", unlock);
+      window.removeEventListener("pointerdown", unlock);
+    };
   }, []);
 
   /* -- park upcoming clips on their first frame -------------------- */
@@ -285,7 +376,9 @@ export function ScrubVideoLayer({
       if (el.readyState >= HAVE_CURRENT_DATA) park();
       else el.addEventListener("loadeddata", park, { once: true });
     }
-  }, [mounted]);
+    // `profile` matters as well as `mounted`: the elements do not exist until
+    // it resolves, so a run before that finds no refs and parks nothing.
+  }, [mounted, profile]);
 
   /* -- bind currentTime to scroll --------------------------------- */
   useEffect(() => {
@@ -355,22 +448,25 @@ export function ScrubVideoLayer({
 
   return (
     <div className="scrub-video-layer" aria-hidden="true">
-      {mounted.map((shot) => (
-        <video
-          key={shot.id}
-          ref={(el) => attach(shot.id, el)}
-          src={shot.src}
-          preload="auto"
-          muted
-          playsInline
-          autoPlay={false}
-          controls={false}
-          disablePictureInPicture
-          onError={() => handleError(shot.id)}
-          onLoadedData={() => handleLoaded(shot.id)}
-          style={{ opacity: 0, zIndex: 1 }}
-        />
-      ))}
+      {/* Nothing renders until the rendition is known — see `detectProfile`. */}
+      {profile !== null &&
+        mounted.map((shot) => (
+          <video
+            key={shot.id}
+            ref={(el) => attach(shot.id, el)}
+            src={clipSrc(shot, profile)}
+            preload="auto"
+            muted
+            playsInline
+            autoPlay={false}
+            controls={false}
+            disablePictureInPicture
+            disableRemotePlayback
+            onError={() => handleError(shot.id)}
+            onLoadedData={() => handleLoaded(shot.id)}
+            style={{ opacity: 0, zIndex: 1 }}
+          />
+        ))}
     </div>
   );
 }

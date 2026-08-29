@@ -28,17 +28,37 @@ const CanvasLayer = dynamic(
   { ssr: false },
 );
 
-function detectQuality(): "high" | "low" {
-  if (typeof window === "undefined") return "high";
+interface Device {
+  quality: "high" | "low";
+  /**
+   * Whether to run the real-time scene at all.
+   *
+   * It is the fallback for scroll ranges no clip covers, and on desktop that
+   * is worth a WebGL context. On a touch device it is not: every act is fully
+   * covered by footage, so the scene is only ever seen in the instant before
+   * the opening shot decodes — and it costs a live GL context, an environment
+   * cube map and a second pass for the reflective floor, all competing for the
+   * same GPU that is decoding the film. The stage paints the same near-black
+   * behind it either way, so on a phone there is nothing to see and a real
+   * amount to pay.
+   */
+  webgl: boolean;
+}
+
+function detectDevice(): Device {
   const coarse = window.matchMedia("(pointer: coarse)").matches;
   const narrow = window.innerWidth < 900;
   const cores = navigator.hardwareConcurrency ?? 8;
-  return coarse || narrow || cores <= 4 ? "low" : "high";
+  return {
+    quality: coarse || narrow || cores <= 4 ? "low" : "high",
+    webgl: !coarse,
+  };
 }
 
 export function Stage() {
   const filmRef = useRef<HTMLDivElement>(null);
-  const [quality, setQuality] = useState<"high" | "low">("high");
+  /** Null until the browser has been asked what it is. */
+  const [device, setDevice] = useState<Device | null>(null);
   /**
    * Whether a Higgsfield clip is currently painting over the whole frame.
    * When it is, the WebGL scene is invisible, and rendering it anyway costs a
@@ -49,7 +69,7 @@ export function Stage() {
   const [covered, setCovered] = useState(false);
 
   useEffect(() => {
-    setQuality(detectQuality());
+    setDevice(detectDevice());
   }, []);
 
   useEffect(() => {
@@ -63,7 +83,23 @@ export function Stage() {
       smoothWheel: true,
       wheelMultiplier: 1,
       touchMultiplier: 1.6,
-      syncTouch: true,
+      /**
+       * Off on touch, and this matters more than it looks.
+       *
+       * `syncTouch` takes touch scrolling away from the browser and drives it
+       * from JavaScript instead: every touchmove is preventDefault-ed and the
+       * page is moved by hand on the next frame. On a desktop that is a
+       * refinement. On a phone it moves scrolling off the compositor thread —
+       * where it is handled by the OS and cannot stutter — and onto the main
+       * thread, which on this site is already busy seeking a video decoder.
+       * The finger then leads the page by however long the current frame
+       * takes, which does not read as a smoothing effect. It reads as the
+       * page ignoring you.
+       *
+       * Native momentum scrolling is the thing phones are best at. Wheel
+       * smoothing is untouched, so nothing changes on desktop.
+       */
+      syncTouch: false,
     });
 
     const raf = (time: number) => lenis.raf(time * 1000);
@@ -109,7 +145,9 @@ export function Stage() {
       <PerfHUD />
       <div className="film" ref={filmRef} style={{ height: `${TOTAL_VH}vh` }}>
         <div className="stage">
-          <CanvasLayer quality={quality} paused={covered} />
+          {device?.webgl && (
+            <CanvasLayer quality={device.quality} paused={covered} />
+          )}
           <ScrubVideoLayer onCoverageChange={setCovered} />
           <Overlays />
         </div>

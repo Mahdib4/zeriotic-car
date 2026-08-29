@@ -505,9 +505,54 @@ export interface ResolvedShot extends ShotDef {
   /** Global scroll progress, 0–1. */
   globalFrom: number;
   globalTo: number;
-  /** Public URL of the clip. */
+  /** Public URL of the 1080p clip. Prefer `clipSrc` — see below. */
   src: string;
 }
+
+/**
+ * Which rendition of the footage to fetch.
+ *
+ * `hd` is 1920x1080 and `sd` is 1280x720; both are produced by
+ * compress-clips.mjs from the same masters and are frame-identical, so the
+ * choice changes nothing about timing, trimming or the manifest.
+ *
+ * A phone is not a small desktop. It has a fraction of the decode budget, a
+ * fraction of the bandwidth, and a screen on which the two are
+ * indistinguishable — `sd` is 70% fewer bytes and, more importantly, tags
+ * H.264 Level 3.1 rather than 4.0, well inside what every mobile decoder
+ * accelerates in hardware.
+ */
+export type ClipProfile = "hd" | "sd";
+
+const PROFILE_DIR: Record<ClipProfile, string> = {
+  hd: "clips",
+  sd: "clips-720",
+};
+
+/**
+ * Bump when the clips are re-encoded. This is a cache-buster, nothing more.
+ *
+ * The clips are uploaded with `Cache-Control: immutable, max-age=31536000`,
+ * which is right — they are large and they do not change. But "they do not
+ * change" is a promise about a URL, not about a filename, and a re-encode
+ * breaks it: the bytes behind `AxiomGT-A1-040_panels-weld.mp4` are different
+ * now, and every browser that has seen the old ones will keep them for a year
+ * and never find out. That is not a theoretical staleness — it means the
+ * people most likely to look again are the ones who cannot see the fix.
+ *
+ * A query string is enough. R2 ignores it when resolving the object, so no
+ * file has to be renamed and the manifest, the seed-frame chain and the
+ * upload script all stay as they are, but the browser treats it as a
+ * different URL and fetches it.
+ */
+const CLIP_VERSION = "2";
+
+/** Where to fetch a given shot at a given rendition. */
+export const clipSrc = (s: ShotDef, profile: ClipProfile): string => {
+  const dir = PROFILE_DIR[profile];
+  const base = CLIP_BASE ? `${CLIP_BASE}/${dir}/${s.file}` : `/${dir}/${s.file}`;
+  return `${base}?v=${CLIP_VERSION}`;
+};
 
 export const RESOLVED_SHOTS: ResolvedShot[] = SHOTS.map((s) => {
   const act = ACTS[s.act];
@@ -515,7 +560,7 @@ export const RESOLVED_SHOTS: ResolvedShot[] = SHOTS.map((s) => {
     ...s,
     globalFrom: lerp(act.start, act.end, s.from),
     globalTo: lerp(act.start, act.end, s.to),
-    src: CLIP_BASE ? `${CLIP_BASE}/clips/${s.file}` : `/clips/${s.file}`,
+    src: clipSrc(s, "hd"),
   };
 });
 

@@ -9,6 +9,8 @@ next-env.d.ts
 # Higgsfield renders are large binaries — keep them out of git, ship via asset storage
 public/clips/*.mp4
 public/clips/*.webm
+# The 720p rendition phones fetch. Same masters, same reason to keep it out.
+public/clips-720/
 public/stills/*.jpg
 public/stills/*.webp
 # The .png anchor still is deliberately NOT ignored: it is the seed frame the

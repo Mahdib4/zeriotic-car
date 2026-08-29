@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
- * upload-clips-r2.mjs — push public/clips to a Cloudflare R2 bucket.
+ * upload-clips-r2.mjs — push both clip renditions to a Cloudflare R2 bucket.
+ *
+ * public/clips and public/clips-720 go up under matching key prefixes, so one
+ * public base URL serves the desktop and mobile cuts of the film.
  *
  * R2 speaks the S3 API, so this signs requests with AWS SigV4 using Node's
  * built-in crypto. No SDK: @aws-sdk/client-s3 is ~20MB of node_modules for a
- * script that makes 26 PUTs.
+ * script that makes 52 PUTs.
  *
  * Credentials come from the environment (see .env.local, gitignored):
  *
@@ -34,7 +37,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const clipDir = path.join(root, "public", "clips");
+
+/**
+ * Both renditions, uploaded under keys that mirror their local directories so
+ * `clipSrc` in lib/shots.ts can build either URL from the same base.
+ *
+ * `clips-720` is what phones fetch. It is a separate set of objects rather
+ * than a transform of the first because R2 has no image or video pipeline in
+ * front of it — what is in the bucket is what is served.
+ */
+const RENDITIONS = [
+  { dir: path.join(root, "public", "clips"), prefix: "clips" },
+  { dir: path.join(root, "public", "clips-720"), prefix: "clips-720" },
+];
 
 /* -- env ---------------------------------------------------------------- */
 
@@ -159,21 +174,24 @@ async function signedFetch(method, key, { body = "", extraHeaders = {} } = {}) {
 
 /* -- work --------------------------------------------------------------- */
 
-if (!fs.existsSync(clipDir)) {
-  console.error(`No clips at ${clipDir}. Run compress-clips.mjs first.`);
-  process.exit(1);
+/** One entry per object to upload, across every rendition. */
+const files = [];
+for (const r of RENDITIONS) {
+  if (!fs.existsSync(r.dir)) {
+    console.error(`No clips at ${r.dir}. Run compress-clips.mjs first.`);
+    process.exit(1);
+  }
+  for (const name of fs.readdirSync(r.dir).filter((f) => f.endsWith(".mp4")).sort()) {
+    const abs = path.join(r.dir, name);
+    files.push({ key: `${r.prefix}/${name}`, abs, size: fs.statSync(abs).size });
+  }
 }
-
-const files = fs.readdirSync(clipDir).filter((f) => f.endsWith(".mp4")).sort();
 if (!files.length) {
-  console.error("No .mp4 files in public/clips.");
+  console.error("No .mp4 files found in either rendition.");
   process.exit(1);
 }
 
-const totalBytes = files.reduce(
-  (n, f) => n + fs.statSync(path.join(clipDir, f)).size,
-  0,
-);
+const totalBytes = files.reduce((n, f) => n + f.size, 0);
 
 console.log("");
 console.log(`  Bucket   ${BUCKET ?? "(unset)"}`);
@@ -183,8 +201,7 @@ console.log("");
 
 if (DRY) {
   for (const f of files) {
-    const size = fs.statSync(path.join(clipDir, f)).size;
-    console.log(`  would put  clips/${f.padEnd(42)} ${(size / 1048576).toFixed(1).padStart(6)} MB`);
+    console.log(`  would put  ${f.key.padEnd(56)} ${(f.size / 1048576).toFixed(1).padStart(6)} MB`);
   }
   console.log("\n  Dry run — nothing uploaded.\n");
   process.exit(0);
@@ -204,21 +221,19 @@ async function head(key) {
 if (VERIFY_ONLY) {
   let good = 0;
   for (const f of files) {
-    const local = fs.statSync(path.join(clipDir, f)).size;
-    const r = await head(`clips/${f}`);
-    const match = r.ok && r.length === local;
+    const r = await head(f.key);
+    const match = r.ok && r.length === f.size;
     if (match) good++;
     console.log(
-      `  ${match ? "ok  " : "MISS"}  clips/${f.padEnd(42)}` +
-        (r.ok ? ` ${r.length === local ? "size ok" : `size ${r.length} vs ${local}`}  ${r.type}` : `  HTTP ${r.status}`),
+      `  ${match ? "ok  " : "MISS"}  ${f.key.padEnd(56)}` +
+        (r.ok ? ` ${r.length === f.size ? "size ok" : `size ${r.length} vs ${f.size}`}  ${r.type}` : `  HTTP ${r.status}`),
     );
   }
   // Range support is not optional for this site. Every frame of the film is
   // reached by assigning video.currentTime, which the browser serves with a
   // byte-range GET. If ranges are ignored the browser refetches the whole
-  // clip for each seek — 14MB per frame — and scrubbing dies.
-  const probe = `clips/${files[0]}`;
-  const rangeRes = await signedFetch("GET", probe, {
+  // clip for each seek — megabytes per frame — and scrubbing dies.
+  const rangeRes = await signedFetch("GET", files[0].key, {
     extraHeaders: { range: "bytes=0-1023" },
   });
   const partial = rangeRes.status === 206;
@@ -232,7 +247,6 @@ if (VERIFY_ONLY) {
     console.error(
       "  Byte ranges are required for scrubbing. Check that nothing in " +
         "front of the bucket strips Range or buffers whole responses.",
-        "  the bucket is strips Range or buffers whole responses.",
     );
   }
 
@@ -251,11 +265,11 @@ async function worker() {
   for (;;) {
     const f = queue.shift();
     if (!f) return;
-    const body = fs.readFileSync(path.join(clipDir, f));
+    const body = fs.readFileSync(f.abs);
     let res;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        res = await signedFetch("PUT", `clips/${f}`, {
+        res = await signedFetch("PUT", f.key, {
           body,
           extraHeaders: {
             "content-type": "video/mp4",
@@ -271,12 +285,12 @@ async function worker() {
     done++;
     if (res && res.ok) {
       console.log(
-        `  [${String(done).padStart(2)}/${files.length}] ${f.padEnd(42)} ${(body.length / 1048576).toFixed(1).padStart(6)} MB`,
+        `  [${String(done).padStart(2)}/${files.length}] ${f.key.padEnd(56)} ${(body.length / 1048576).toFixed(1).padStart(6)} MB`,
       );
     } else {
       failed++;
       const detail = res ? `HTTP ${res.status} ${res.statusText}` : "no response";
-      console.error(`  [${String(done).padStart(2)}/${files.length}] ${f}  FAILED  ${detail}`);
+      console.error(`  [${String(done).padStart(2)}/${files.length}] ${f.key}  FAILED  ${detail}`);
       if (res && res.text) {
         try {
           console.error(`      ${(await res.text()).slice(0, 300)}`);

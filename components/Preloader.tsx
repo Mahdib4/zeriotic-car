@@ -6,8 +6,9 @@
  * The wordmark resolves letter by letter out of a wide tracking, settles, and
  * lifts away to reveal the film.
  *
- * It is not only decoration. `ScrubVideoLayer` will not show a clip until it is
- * fully buffered, and off object storage that takes about a second — so
+ * It is not only decoration. `ScrubVideoLayer` will not show a clip until the
+ * stretch it is about to be scrubbed into has arrived, and off object storage
+ * that takes the better part of a second — so
  * without this the visitor's first moment on the site was the empty fallback
  * room while the opening shot downloaded. The title card covers exactly that
  * gap, and it holds until the first clip is genuinely ready rather than for a
@@ -29,14 +30,21 @@ const MAX_MS = 7000;
 /** Matches the fade-out in globals.css. */
 const EXIT_MS = 900;
 
-function bufferedFraction(el: HTMLVideoElement): number {
-  const d = el.duration;
-  if (!Number.isFinite(d) || d <= 0) return 0;
-  let covered = 0;
+/**
+ * Seconds buffered contiguously from the very start of the clip.
+ *
+ * This used to ask for 98% of the whole file, which is the same mistake rule 6
+ * in ScrubVideoLayer was written to undo: it is far more than opening the film
+ * requires, and on a phone it meant the title card almost always sat out its
+ * full seven-second cap before giving up. What the opening actually needs is
+ * that the first stretch the visitor can scrub into has arrived — the rest
+ * keeps downloading behind them while they watch.
+ */
+function bufferedFromStart(el: HTMLVideoElement): number {
   for (let i = 0; i < el.buffered.length; i++) {
-    covered += el.buffered.end(i) - el.buffered.start(i);
+    if (el.buffered.start(i) <= 0.05) return el.buffered.end(i);
   }
-  return covered / d;
+  return 0;
 }
 
 export function Preloader() {
@@ -69,7 +77,12 @@ export function Preloader() {
       const first = document.querySelector<HTMLVideoElement>(
         ".scrub-video-layer video",
       );
-      const ready = first ? bufferedFraction(first) > 0.98 : false;
+      // Matches READY_LOOKAHEAD_SEC in ScrubVideoLayer: the same runway the
+      // film itself requires before it will show a clip. Asking for less would
+      // dismiss the card onto a shot the film then refuses to display.
+      const ready = first
+        ? bufferedFromStart(first) >= Math.min(3.5, first.duration || 3.5)
+        : false;
 
       if (waited > MIN_MS && ready) {
         dismiss();
