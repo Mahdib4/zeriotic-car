@@ -501,6 +501,35 @@ const CLIP_BASE = RAW_CLIP_BASE.endsWith("/")
   ? RAW_CLIP_BASE.slice(0, -1)
   : RAW_CLIP_BASE;
 
+/**
+ * Origin the clips come from, for a `preconnect` in the document head. Empty
+ * when they are served from this origin, where there is nothing to warm.
+ *
+ * The clips live on a different host from the app, so before the first byte of
+ * video can be requested the browser must do a DNS lookup, a TCP handshake and
+ * a TLS handshake against that host — measured at 91ms from a wired desktop,
+ * and several times that over cellular, where each round trip is slow. None of
+ * it can start until the client component has mounted and put a `src` on a
+ * video element, which is late.
+ *
+ * Preconnecting moves all of it into the initial HTML parse, so the connection
+ * is already open and warm by the time the film asks for anything. It is
+ * derived from CLIP_BASE rather than written out again, so it cannot drift
+ * from where the clips are actually fetched from.
+ *
+ * Deliberately without `crossorigin`: the video elements carry no `crossOrigin`
+ * attribute, so their requests are credentialed, and a preconnect that does not
+ * match lands in a different connection pool and warms nothing.
+ */
+export const CLIP_ORIGIN = (() => {
+  if (!CLIP_BASE) return "";
+  try {
+    return new URL(CLIP_BASE).origin;
+  } catch {
+    return "";
+  }
+})();
+
 export interface ResolvedShot extends ShotDef {
   /** Global scroll progress, 0–1. */
   globalFrom: number;

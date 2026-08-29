@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Space_Grotesk } from "next/font/google";
 
 import { dealership } from "@/lib/content";
+import { CLIP_ORIGIN } from "@/lib/shots";
 import "./globals.css";
 
 const geometric = Space_Grotesk({
@@ -32,6 +33,18 @@ export default function RootLayout({
   return (
     <html lang="en" className={geometric.variable}>
       <head>
+        {/*
+          Open the connection to the clip host while the HTML is still being
+          parsed. The film cannot ask for a clip until React has hydrated and
+          mounted the video layer, and the DNS, TCP and TLS round trips it
+          would then pay for are pure latency in front of the first frame.
+        */}
+        {CLIP_ORIGIN && (
+          <>
+            <link rel="preconnect" href={CLIP_ORIGIN} />
+            <link rel="dns-prefetch" href={CLIP_ORIGIN} />
+          </>
+        )}
         {/*
           Without JavaScript the film never mounts, and the catalogue — which
           CSS now hides by default — would be the only content on the page and
