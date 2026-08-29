@@ -112,6 +112,14 @@ const READY_LOOKAHEAD_SEC = 3.5;
 const MAX_BUFFER_WAIT_MS = 700;
 
 /**
+ * How often to prod clips the browser has refused to preload, and how many
+ * times to prod any one of them before accepting it is not going to load.
+ * See the effect that uses these.
+ */
+const KICK_INTERVAL_MS = 700;
+const MAX_KICKS = 4;
+
+/**
  * Seconds of continuously buffered video sitting ahead of `t`.
  *
  * Deliberately measures the range CONTAINING `t` rather than a total: a clip
@@ -269,6 +277,11 @@ export function ScrubVideoLayer({
   /** Set the target and, if the decoder is idle and off cooldown, move it. */
   const seekTo = useCallback((el: HTMLVideoElement, id: string, t: number) => {
     want.current.set(id, t);
+    // A scrubbed clip must never be playing. `kick` starts playback on purpose
+    // to force a fetch and pauses as soon as the promise resolves, but that
+    // resolution is not instant — this makes "paused" an invariant of being
+    // scrubbed rather than something the kick is trusted to restore.
+    if (!el.paused) el.pause();
     if (el.seeking) return;
     if (Math.abs(el.currentTime - t) <= HALF_FRAME) return;
     const now = performance.now();
@@ -324,37 +337,60 @@ export function ScrubVideoLayer({
   }, []);
 
   /**
-   * iOS will not fetch video data on its own.
+   * Mobile browsers will not fetch video data on their own.
    *
-   * Safari on iOS treats `preload="auto"` as a hint it is free to ignore, and
-   * on a phone it generally does: a video element that has never been played
-   * sits at readyState 0 with nothing buffered, so the buffer gate in rule 6
-   * can never open and every seek is a cold network round trip. The documented
-   * way out is a user gesture, after which the element may fetch.
+   * `preload="auto"` is a hint, and phones ignore it — Safari on iOS as
+   * policy, Chrome on Android whenever it decides the connection is metered.
+   * An element that has never been played then sits at readyState 0 with
+   * nothing buffered, and because rule 1 will not show a clip that cannot
+   * paint a frame, the film has nothing to display. That is a black screen,
+   * for the whole film, on every phone.
+   *
+   * Starting playback is what actually triggers a fetch, so each stalled clip
+   * is played and immediately paused. The videos are muted and inline, which
+   * is the condition under which autoplay is permitted without a gesture; the
+   * touch listeners are a backstop for the browsers that want one anyway.
    *
    * Only elements that have genuinely fetched nothing are touched, so on every
-   * other platform — where preload works — this does nothing at all. A clip at
-   * readyState 0 has no decoded frame and sits at currentTime 0, so the
-   * play/pause pair cannot produce a visible jump.
+   * platform where preload works this does nothing at all, and it can never
+   * disturb the clip on screen. A clip at readyState 0 has no decoded frame,
+   * so the play/pause pair cannot produce a visible jump.
    */
   useEffect(() => {
-    const unlock = () => {
-      for (const [, el] of videos.current) {
+    /** Kicks already spent per clip, so a genuinely broken one cannot loop. */
+    const kicks = new Map<string, number>();
+
+    const kick = () => {
+      for (const [id, el] of videos.current) {
+        // readyState 0 means the browser has fetched nothing at all. Anything
+        // that has started loading is left alone, so this never disturbs a
+        // clip that is working — including the one currently on screen, which
+        // by definition has decoded a frame.
         if (el.readyState !== 0) continue;
-        void el
-          .play()
-          .then(() => el.pause())
-          .catch(() => {
-            /* Autoplay refused: nothing to undo, and nothing else to try. */
+        const n = kicks.get(id) ?? 0;
+        if (n >= MAX_KICKS) continue;
+        kicks.set(id, n + 1);
+        const p = el.play();
+        if (p && typeof p.then === "function") {
+          p.then(() => el.pause()).catch(() => {
+            /* Refused. The next kick will try again, up to MAX_KICKS. */
           });
+        }
       }
     };
-    const opts = { once: true, passive: true } as const;
-    window.addEventListener("touchstart", unlock, opts);
-    window.addEventListener("pointerdown", unlock, opts);
+
+    // Every mounted clip, repeatedly — not once on the first gesture, which
+    // is what this did at first and why it did not work. `once` unlocked
+    // whatever happened to be mounted at the time and nothing afterwards, so
+    // the film went black at the first shot boundary and stayed there.
+    const timer = window.setInterval(kick, KICK_INTERVAL_MS);
+    const opts = { passive: true } as const;
+    window.addEventListener("touchstart", kick, opts);
+    window.addEventListener("pointerdown", kick, opts);
     return () => {
-      window.removeEventListener("touchstart", unlock);
-      window.removeEventListener("pointerdown", unlock);
+      window.clearInterval(timer);
+      window.removeEventListener("touchstart", kick);
+      window.removeEventListener("pointerdown", kick);
     };
   }, []);
 

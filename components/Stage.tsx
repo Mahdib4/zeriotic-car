@@ -33,14 +33,19 @@ interface Device {
   /**
    * Whether to run the real-time scene at all.
    *
-   * It is the fallback for scroll ranges no clip covers, and on desktop that
-   * is worth a WebGL context. On a touch device it is not: every act is fully
-   * covered by footage, so the scene is only ever seen in the instant before
-   * the opening shot decodes — and it costs a live GL context, an environment
-   * cube map and a second pass for the reflective floor, all competing for the
-   * same GPU that is decoding the film. The stage paints the same near-black
-   * behind it either way, so on a phone there is nothing to see and a real
-   * amount to pay.
+   * It is the fallback for any moment no clip is covering the frame, and it is
+   * always on. It was briefly switched off for touch devices, on the argument
+   * that every act is covered by footage so the scene is only ever seen in the
+   * instant before the opening shot decodes — while costing a live GL context
+   * and a second pass for the reflective floor against the same GPU that is
+   * decoding the film.
+   *
+   * The argument was fine and the conclusion was wrong. It assumed the footage
+   * always arrives, and the first thing that went wrong on a real phone was
+   * that it did not: with no scene behind it, "the clip has not loaded" became
+   * a black screen rather than a dim room, and nothing on the page said so.
+   * The saving was only ever paid while the film is uncovered, which is
+   * exactly when the fallback is the thing being asked for.
    */
   webgl: boolean;
 }
@@ -54,7 +59,7 @@ function detectDevice(): Device {
   const cores = navigator.hardwareConcurrency ?? 8;
   return {
     quality: coarse || narrow || cores <= 4 ? "low" : "high",
-    webgl: !coarse,
+    webgl: true,
   };
 }
 

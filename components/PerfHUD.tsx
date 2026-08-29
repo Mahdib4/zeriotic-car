@@ -16,6 +16,11 @@
  *            the display's own refresh period — 8.3ms on a 120Hz monitor, not
  *            16.7ms — so the readout means the same thing on every screen.
  *            Healthy is a p95 under budget with 0 blown.
+ *   video    which rendition is being fetched, and one character per mounted
+ *            clip: `+` decodable, `m` metadata only, `0` nothing fetched at
+ *            all, `E` load error. All `0` is the signature of a browser that
+ *            has ignored `preload` — a black film with healthy everything
+ *            else. This is the line to read first on a phone.
  *   clip     which shot is live, and where in the film we are
  */
 
@@ -41,6 +46,7 @@ export function PerfHUD() {
   const canvasRef = useRef<HTMLSpanElement>(null);
   const seekRef = useRef<HTMLSpanElement>(null);
   const bufRef = useRef<HTMLSpanElement>(null);
+  const mediaRef = useRef<HTMLSpanElement>(null);
   const shotRef = useRef<HTMLSpanElement>(null);
   const posRef = useRef<HTMLSpanElement>(null);
 
@@ -174,6 +180,27 @@ export function PerfHUD() {
         bufRef.current.textContent = pct + "%";
         bufRef.current.style.color = pct >= 98 ? "#4ade80" : pct >= 60 ? "#facc15" : "#f87171";
       }
+      if (mediaRef.current) {
+        /**
+         * One character per mounted clip, plus the rendition being fetched.
+         *
+         * This exists because a phone cannot be attached to a debugger easily,
+         * and the failure that mattered most looked identical to every other
+         * failure from the outside: a black frame. These four states tell them
+         * apart. `0` on every clip means the browser fetched nothing at all
+         * and the film has nothing to paint — which is a preload problem, not
+         * a bandwidth or decode one, and is what `kick` in ScrubVideoLayer is
+         * there to break.
+         */
+        const vids = [...document.querySelectorAll("video")];
+        const states = vids
+          .map((v) => (v.error ? "E" : v.readyState === 0 ? "0" : v.readyState < 2 ? "m" : "+"))
+          .join("");
+        const rendition = vids[0]?.src.includes("clips-720") ? "720" : "1080";
+        const bad = states.includes("E") || !states.includes("+");
+        mediaRef.current.textContent = `${rendition} [${states || "none"}]`;
+        mediaRef.current.style.color = bad ? "#f87171" : "#4ade80";
+      }
       if (canvasRef.current) {
         const c = document.querySelector<HTMLElement>(".stage-canvas");
         const parked = c?.style.visibility === "hidden";
@@ -221,6 +248,9 @@ export function PerfHUD() {
       </div>
       <div>
         buffer <span ref={bufRef}>—</span>
+      </div>
+      <div>
+        video <span ref={mediaRef}>—</span>
       </div>
       <div>
         clip <span ref={shotRef}>—</span>
