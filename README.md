@@ -539,6 +539,71 @@ seconds no matter what" fires while the footer is still far off screen for any
 reader moving at a human pace through 2400vh, losing the animation for exactly
 the people who were watching properly.
 
+## Delivery is the bottleneck, not decoding
+
+Once the clips moved to object storage the limiting factor stopped being how
+fast the decoder could seek and became how fast the bytes arrive. Two numbers
+matter, both measured in-browser against the live bucket:
+
+| | before | after |
+| --- | --- | --- |
+| Time before a shot boundary can be crossed | 1811ms | **468ms** |
+| Shipped footage | 286MB | **196MB** |
+
+Three things caused the original figure.
+
+**The readiness gate demanded the whole file.** That was correct off local
+disk and badly wrong over a network: a 14MB clip takes ~1.8s to download in
+full, so every boundary became a wall the film could not cross, and scrolling
+faster than that froze the picture outright. The gate is now position-aware —
+what has to be true is that the bytes about to be scrubbed *into* are present,
+not that the file is complete. 3.5s of runway ahead of the playhead is enough,
+because scrubbing tracks scroll and therefore advances through a clip roughly
+monotonically.
+
+It deliberately measures the buffered range *containing* the playhead rather
+than a total. A clip with two disjoint buffered islands summing to most of its
+length is still one seek away from a network round trip, and summing them
+would call that ready when it is not.
+
+**Bitrate is a latency cost here, not a storage one.** Nothing can be scrubbed
+until it arrives, so CRF moved from 20 to 23: SSIM against the master goes
+0.9944 → 0.9926 for 31% fewer bytes. Resolution stays at 1080p deliberately —
+that is the part viewers notice, and dropping to 720p saves less than the CRF
+change while being far more visible.
+
+**The lookahead is a network parameter.** The mount window runs one clip
+behind and three ahead. The extra depth is not for the decoder; it decides how
+fast a visitor may scroll before they outrun the prefetch.
+
+### The r2.dev hostname is not on the CDN
+
+```
+$ curl -I https://pub-….r2.dev/clips/…mp4
+HTTP/1.1 200 OK
+Server: cloudflare
+Cache-Control: public, max-age=31536000, immutable
+```
+
+Note what is **missing**: there is no `cf-cache-status` header, on any
+request, however many times it is repeated. The `r2.dev` development hostname
+does not sit behind Cloudflare's cache, so every clip is pulled from the R2
+origin — measured TTFB is a flat ~250–435ms with no improvement on repeat.
+
+Binding a custom domain to the bucket puts it behind the CDN properly: cached
+at an edge near the visitor, with TTFB in the tens of milliseconds instead of
+hundreds. That is the largest remaining win and it needs no code change — set
+`NEXT_PUBLIC_CLIP_BASE_URL` to the new hostname, which overrides the default
+in `lib/shots.ts`. It is also the documented requirement: `r2.dev` is
+rate-limited and Cloudflare does not support it for production traffic.
+
+### Re-uploading over the same filenames
+
+The clips carry `immutable` for a year and a recut keeps its filename, so a
+browser that already has the old bytes will not re-request them. That is the
+right trade for visitors, but it means **you** need a hard reload after
+re-running `npm run upload:clips`.
+
 ## Known gaps
 
 - **Number plates and badges.** The generator put garbled characters on some
