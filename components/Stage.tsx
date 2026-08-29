@@ -47,7 +47,10 @@ interface Device {
 
 function detectDevice(): Device {
   const coarse = window.matchMedia("(pointer: coarse)").matches;
-  const narrow = window.innerWidth < 900;
+  // See detectProfile in ScrubVideoLayer: a zero width means "unknown", not
+  // "narrow", and this runs once so a wrong answer sticks for the session.
+  const w = window.innerWidth;
+  const narrow = w > 0 && w < 900;
   const cores = navigator.hardwareConcurrency ?? 8;
   return {
     quality: coarse || narrow || cores <= 4 ? "low" : "high",

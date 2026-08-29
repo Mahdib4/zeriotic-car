@@ -194,7 +194,13 @@ function windowFrom(i: number, ahead: number): ResolvedShot[] {
  */
 function detectProfile(): ClipProfile {
   const coarse = window.matchMedia("(pointer: coarse)").matches;
-  const narrow = window.innerWidth < 900;
+  // `> 0` is not redundant. A viewport can report zero width — a hidden or
+  // not-yet-laid-out embedding context will — and that is "unknown", not
+  // "narrow". Without the guard it reads as the narrowest possible window and
+  // pins a desktop visitor to the mobile cut for the whole session, with
+  // nothing to recover from it, because this runs once.
+  const w = window.innerWidth;
+  const narrow = w > 0 && w < 900;
   const cores = navigator.hardwareConcurrency ?? 8;
   return coarse || narrow || cores <= 4 ? "sd" : "hd";
 }
